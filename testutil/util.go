@@ -14,6 +14,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"v.io/x/lib/gosh"
 )
 
 // MockTB is a mock implementation of gosh.TB. FailNow and Fatalf will
@@ -159,4 +161,43 @@ func GetTmpDir() string {
 		panic(err.Error)
 	}
 	return tmpPath
+}
+
+// IsBazel checks if the current process is started by "bazel test".
+func IsBazel() bool {
+	return os.Getenv("TEST_TMPDIR") != "" && os.Getenv("RUNFILES_DIR") != ""
+}
+
+// GoExecutable returns the Go executable for "path", or builds the executable
+// and returns its path. The latter happens when the caller is not running under
+// Bazel. "path" must start with "@grailgo//".  For example,
+// "@grailgo//cmd/bio-metrics/bio-metrics".
+func GoExecutable(t interface {
+	Fatalf(string, ...interface{})
+},
+	sh *gosh.Shell,
+	path string) string {
+	re := regexp.MustCompile("^@grailgo//(.*/([^/]+))/([^/]+)$")
+	match := re.FindStringSubmatch(path)
+	if match == nil || match[2] != match[3] {
+		t.Fatalf("%v: target must be of format \"@grailgo//path/target/target\"",
+			path)
+	}
+	if IsBazel() {
+		expandedPath := GetFilePath(path)
+		if _, err := os.Stat(expandedPath); err == nil {
+			return expandedPath
+		}
+		pattern := GetFilePath(fmt.Sprintf("@grailgo//%s/*/%s", match[1], match[2]))
+		paths, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob %v: %v", pattern, err)
+		}
+		if len(paths) != 1 {
+			t.Fatalf("Pattern %s must match exactly one executable, but found %v", pattern, paths)
+		}
+		return paths[0]
+	}
+	tempdir := sh.MakeTempDir()
+	return gosh.BuildGoPkg(sh, tempdir, "grail.com/"+match[1])
 }
